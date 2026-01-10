@@ -1,29 +1,33 @@
-import re
 import sys, os
 from loguru import logger
-import pandas as pd
 from utils.pdf_splitter import PDFSplitter
-from exllamav2 import (
+
+from exllamav2 import(
     ExLlamaV2,
     ExLlamaV2Config,
     ExLlamaV2Cache,
-    ExLlamaV2Tokenizer
+    ExLlamaV2Tokenizer,
 )
 
-from exlallamv2.generator import (
+from exllamav2.generator import (
     ExLlamaV2BaseGenerator,
     ExLlamaV2Sampler
 )
 
+import re
+import pandas as pd
+
 def lowercase_dict(d):
     return {key: value.lower() for key, value in d.items()}
 
+
 def process_results(object):
     filtered_list = [item for item in object if len(item) > 1]
+
     elements_to_remove = {
         'node_1': 'A concept from extracted ontology',
         'node_2': 'A related concept from extracted ontology',
-        'edge': 'Relationship between the two concepts, node_1 and node_2 in one or two sentences'
+        'edge': 'relationship between the two concepts, node_1 and node_2 in one or two sentences'
     }
 
     filtered_list = [lowercase_dict(item) for item in filtered_list if item != elements_to_remove]
@@ -51,7 +55,6 @@ and the relation between them, like the following: \n
     }, {...}\n"
 ]"
 DO NOT RETURN ANY EXPLANATION, ONLY RETURN THE LIST OF JSON.
-
 """
 
 qna_prompt = """You are a helpful assistant. You do not respond as 'User' or pretend to be 'User'.
@@ -60,14 +63,117 @@ and if the answer is not present in the context, say you don't know the answer.
 CONTEXT: {context}
 """
 
+class RAG_LLM:
+    def __init__(self, model_directory: str, temperature: float, top_k: float, top_p: float, top_a: float, token_repetition_penalty: float):
 
-class RAGLLM:
-    def __init__(self,model_directory:str, temprature:float, top_k:float, top_p: float,top_a:float, token_repetition_penalty:float):
         self.model_directory = model_directory
-        self.temperature = temprature
+        self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
         self.top_a = top_a
         self.token_repetition_penalty = token_repetition_penalty
     
+    def setup_model(self) -> None:
+        self.config = ExLlamaV2Config()
+        self.config.model_dir = self.model_directory
+        self.config.prepare()
+
+        self.model = ExLlamaV2(self.config)
+        logger.info("Loading model...")
+
+        self.cache = ExLlamaV2Cache(self.model, lazy = True)
+        self.model.load_autosplit(self.cache)
+
+        self.tokenizer = ExLlamaV2Tokenizer(self.config)
+
+        self.generator = ExLlamaV2BaseGenerator(self.model, self.cache, self.tokenizer)
+
+        self.settings = ExLlamaV2Sampler.Settings()
+        self.settings.temperature = self.temperature
+        self.settings.top_k = self.top_k
+        self.settings.top_p = self.top_p
+        self.settings.top_a = self.top_a
+        self.settings.token_repetition_penalty = self.token_repetition_penalty
+        self.settings.disallow_tokens(self.tokenizer, [self.tokenizer.eos_token_id])
+
+    def generate_nodes(self, chunks, max_new_tokens) -> str:
+        if self.generator is None or self.settings is None:
+            raise RuntimeError("Model not initialized. Call setup_model() first.")
+        
+        all_matches = []
+
+        self.generator.warmup()
+
+        prompt = """<|im_start|>system
+        {system_prompt}
+        <|im_end|>
+        <|im_start|>user
+        {text_chunk}
+        <|im_end|>
+        <|im_start|>assistant
+        """
+
+        for idx, chunk in enumerate(chunks):
+            logger.info(f"Extracting tuples from chunk: {idx}")
+            output = self.generator.generate_simple(prompt.format(system_prompt = system_prompt, text_chunk = chunk['text']), self.settings, max_new_tokens, seed = 1234)
+            
+            #extracting dict types
+            pattern = r'\{[^}]+\}'
+            matches = re.findall(pattern, output)
+            try:
+                dictionaries = [eval(match) for match in matches]
+                dictionaries = process_results(dictionaries)
+
+                for _d in dictionaries:
+                    _d['chunk'] = chunk['text']
+                    
+                all_matches.extend(dictionaries)
+            except:
+                pass
+        
+        df = pd.DataFrame(all_matches)
+        df = df.drop_duplicates(subset=['node_1', 'node_2', 'edge'], keep=False)
+        return df
     
+    def generate_answers(self, chunks, query, max_new_tokens) -> str:
+        if self.generator is None or self.settings is None:
+            raise RuntimeError("Model not initialized. Call setup_model() first.")
+        
+        self.generator.warmup()
+
+        prompt = """<|im_start|>system
+        {qna_prompt}
+        <|im_end|>
+        <|im_start|>user
+        {query}
+        <|im_end|>
+        <|im_start|>assistant
+        """
+        logger.info(f"Asking the assistant : {query}")
+        output = self.generator.generate_simple(prompt.format(qna_prompt = qna_prompt.format(context = chunks), query = query), self.settings, max_new_tokens, seed = 1234)
+
+        start_tag = "<|im_start|>"
+        end_tag = "<|im_end|>"
+        start_index = output.rfind(start_tag)
+        end_index = output.rfind(end_tag)
+        logger.info(f"Answer : {output[start_index + len(start_tag): end_index]}")
+
+        
+
+
+
+# if __name__ == '__main__':
+#     rag_llm_instance = RAG_LLM(
+#         model_directory="jimmy@techbro:~/Downloads/mistral-7b-orca",
+#         temperature=1.0,
+#         top_k=5,
+#         top_p=0.8,
+#         top_a=0.9,
+#         token_repetition_penalty=1.2
+#     )
+
+#     rag_llm_instance.setup_model()
+
+#     prompt = "write a story on"
+#     generated_text = rag_llm_instance.generate_text(prompt, 100)
+#     print(generated_text)

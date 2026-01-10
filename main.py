@@ -9,10 +9,10 @@ import torch
 
 if __name__ == '__main__':
     splitter = PDFSplitter()
-    chunks = splitter.split_document(r"C:\Users\Jino Rohit\Downloads\Jino-Rohit-Resume.pdf", max_size = 500)
+    chunks = splitter.split_document(r"jimmy@techbro:~/Downloads/go-programming.pdf", max_size = 500)
 
     rag_llm = RAG_LLM(
-        model_directory="C:/Users/Jino Rohit/Downloads/mistral-7b-orca",
+        model_directory="jimmy@techbro:~/Downloads/mistral-7b-orca",
         temperature=1.0,
         top_k=5,
         top_p=0.8,
@@ -34,7 +34,7 @@ if __name__ == '__main__':
     vector_store = Weaviate_Store(store_name = 'Demo')
     vector_store.store_vectors(entities_df)
 
-    query = "what was the solution for the hackathon"
+    query = "What are the data structures in Go?"
     response = vector_store.keyword_search(query = query, top_k = 5)
 
     for _r in response['data']['Get']['Demo']:

@@ -3,3 +3,4 @@ weaviate
 langchain_text_splitters
 fitz
 loguru 
+transformers
